@@ -1019,12 +1019,27 @@ func TestStatefulSetControlRollingUpdateWithMaxUnavailable(t *testing.T) {
 		// if pod 4 ready, start to update pod 3, even though 5 is not ready
 		spc.setPodRunning(set, 4)
 		spc.setPodRunning(set, 5)
-		originalPods, _ := spc.setPodReady(set, 4)
+		readyDuration := -30 * time.Minute
+		originalPods, _ := spc.setPodAvailable(set, 4, time.Now().Add(readyDuration))
 		sort.Sort(ascendingOrdinal(originalPods))
 		if _, err := ssc.UpdateStatefulSet(context.TODO(), set, originalPods); err != nil {
 			t.Fatal(err)
 		}
 		pods, err := spc.podsLister.Pods(set.Namespace).List(selector)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sort.Sort(ascendingOrdinal(pods))
+		// since minReadySeconds hasn't elapsed, all pods should still be present
+		if !reflect.DeepEqual(pods, originalPods) {
+			t.Fatalf("Expected pods %v, got pods %v", originalPods, pods)
+		}
+		readyDuration = -120 * time.Minute
+		originalPods, _ = spc.setPodAvailable(set, 4, time.Now().Add(readyDuration))
+		if _, err := ssc.UpdateStatefulSet(context.TODO(), set, originalPods); err != nil {
+			t.Fatal(err)
+		}
+		pods, err = spc.podsLister.Pods(set.Namespace).List(selector)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1127,6 +1142,7 @@ func TestStatefulSetControlRollingUpdateWithMaxUnavailable(t *testing.T) {
 		var partition int32 = 3
 		var maxUnavailable = intstr.FromInt32(2)
 		set := setupPodManagementPolicy(tc.policyType, newStatefulSet(totalPods))
+		set = setMinReadySeconds(set, int32(3600))
 		set.Spec.UpdateStrategy = apps.StatefulSetUpdateStrategy{
 			Type: apps.RollingUpdateStatefulSetStrategyType,
 			RollingUpdate: func() *apps.RollingUpdateStatefulSetStrategy {
@@ -1137,7 +1153,7 @@ func TestStatefulSetControlRollingUpdateWithMaxUnavailable(t *testing.T) {
 			}(),
 		}
 
-		client := fake.NewSimpleClientset()
+		client := fake.NewSimpleClientset(set)
 		spc, _, ssc := setupController(client)
 		if err := scaleUpStatefulSetControl(set, ssc, spc, assertBurstInvariants); err != nil {
 			t.Fatal(err)
